@@ -12,6 +12,7 @@ Then open the localhost URL shown in your terminal (usually http://localhost:786
 but check your terminal — the port may differ).
 """
 
+
 import gradio as gr
 
 from agent import run_agent
@@ -43,8 +44,39 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
            string and return it along with session["outfit_suggestion"] and
            session["fit_card"].
     """
-    # TODO: implement this function
-    return "Agent not yet implemented.", "", ""
+    # 1. Guard against an empty query.
+    if not user_query or not user_query.strip():
+        return "Please enter what you're looking for.", "", ""
+
+    # 2. Select the wardrobe based on the radio choice.
+    if wardrobe_choice == "Empty wardrobe (new user)":
+        wardrobe = get_empty_wardrobe()
+    else:
+        wardrobe = get_example_wardrobe()
+
+    # 3. Run the planning loop.
+    session = run_agent(query=user_query.strip(), wardrobe=wardrobe)
+
+    # 4. Error path — show the message in the first panel.
+    if session["error"]:
+        return session["error"], "", ""
+
+    # 5. Happy path — format the selected listing for display.
+    item = session["selected_item"]
+    price = item.get("price")
+    price_str = f"${price:.2f}" if isinstance(price, (int, float)) else str(price)
+    listing_text = "\n".join([
+        item.get("title", "Untitled listing"),
+        f"Price: {price_str}",
+        f"Size: {item.get('size', 'n/a')}",
+        f"Condition: {item.get('condition', 'n/a')}",
+        f"Platform: {item.get('platform', 'n/a')}",
+        f"Brand: {item.get('brand') or 'n/a'}",
+        "",
+        item.get("description", ""),
+    ])
+
+    return listing_text, session["outfit_suggestion"], session["fit_card"]
 
 
 # ── interface ─────────────────────────────────────────────────────────────────

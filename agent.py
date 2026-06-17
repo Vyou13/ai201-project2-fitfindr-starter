@@ -18,7 +18,69 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+# Words that signal a size follows (so we don't treat them as search keywords).
+_SIZE_TOKENS = {"xxs", "xs", "s", "m", "l", "xl", "xxl", "xxxl"}
+
+# Filler words stripped from the description after extracting size/price.
+_STOPWORDS = {
+    "i", "im", "a", "an", "the", "for", "looking", "look", "want", "wanting",
+    "need", "needing", "some", "find", "finding", "searching", "search",
+    "to", "buy", "get", "my", "in", "size", "under", "below", "less", "than",
+    "max", "maximum", "around", "about", "cheap", "please", "thrift",
+}
+
+
+def _parse_query(query: str) -> dict:
+    """
+    Extract a search description, optional size, and optional max_price from a
+    free-text user query using regex + token matching (deterministic, no API).
+    """
+    text = query.lower()
+
+    # max_price: match "$30", "under 30", "below 25.50", "max 40", etc.
+    max_price = None
+    price_match = re.search(
+        r"(?:\$|under|below|less than|max(?:imum)?|around)\s*\$?\s*(\d+(?:\.\d+)?)",
+        text,
+    )
+    if not price_match:
+        price_match = re.search(r"\$\s*(\d+(?:\.\d+)?)", text)
+    if price_match:
+        max_price = float(price_match.group(1))
+
+    # size: look for "size X" first, then any standalone size token.
+    size = None
+    size_phrase = re.search(r"size\s+([a-z0-9/]+)", text)
+    if size_phrase:
+        size = size_phrase.group(1).upper()
+    else:
+        for token in re.findall(r"[a-z]+", text):
+            if token in _SIZE_TOKENS:
+                size = token.upper()
+                break
+
+    # description: drop price/size mentions and filler words, keep keywords.
+    stripped = re.sub(
+        r"(?:\$|under|below|less than|max(?:imum)?|around)\s*\$?\s*\d+(?:\.\d+)?",
+        " ",
+        text,
+    )
+    stripped = re.sub(r"size\s+[a-z0-9/]+", " ", stripped)
+    words = re.findall(r"[a-z0-9'-]+", stripped)
+    keywords = [
+        w for w in words
+        if w not in _STOPWORDS and w not in _SIZE_TOKENS
+    ]
+    description = " ".join(keywords).strip() or query.strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +154,55 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: initialize session state.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into search parameters.
+    session["parsed"] = _parse_query(query)
+
+    # Step 3: search the listings.
+    try:
+        results = search_listings(
+            description=session["parsed"]["description"],
+            size=session["parsed"]["size"],
+            max_price=session["parsed"]["max_price"],
+        )
+    except Exception as exc:  # defensive — search should not normally raise
+        session["error"] = f"Something went wrong while searching: {exc}"
+        return session
+
+    session["search_results"] = results
+
+    # Branch A — no matches: set a helpful error and stop early.
+    if not results:
+        session["error"] = (
+            "No listings matched your search. Try expanding your budget, "
+            "loosening the size filter, or using broader keywords."
+        )
+        return session
+
+    # Step 4: select the top (most relevant) result.
+    session["selected_item"] = results[0]
+
+    # Step 5: suggest an outfit.
+    try:
+        session["outfit_suggestion"] = suggest_outfit(
+            session["selected_item"], wardrobe
+        )
+    except Exception as exc:
+        session["error"] = f"Could not generate an outfit suggestion: {exc}"
+        return session
+
+    # Step 6: create a shareable fit card.
+    try:
+        session["fit_card"] = create_fit_card(
+            session["outfit_suggestion"], session["selected_item"]
+        )
+    except Exception as exc:
+        session["error"] = f"Could not generate a fit card: {exc}"
+        return session
+
+    # Step 7: return the completed session.
     return session
 
 
